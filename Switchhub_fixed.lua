@@ -1,15 +1,15 @@
 --[[
     ╔═══════════════════════════════════════════════════════════╗
-    ║         Switch Hub - Bounty Hunting Ultimate V6           ║
+    ║         Switch Hub - Bounty Hunting Ultimate V7           ║
     ║                    By: tbobiito                           ║
     ╚═══════════════════════════════════════════════════════════╝
-    V6 FIX:
+    V7 UPDATE:
     ✅ Kill TẤT CẢ player trong server - không giới hạn level
-    ✅ Fix chọn target - luôn có target nếu server có người
-    ✅ Hop server ưu tiên 9-16 người để kill nhiều hơn
+    ✅ SPAM HOP liên tục khi hết player — thử server này fail → server khác ngay
+    ✅ Cache server list 15s để không spam API
+    ✅ Hop ưu tiên server 9-16 người, fallback server 3+ người
     ✅ Bay BodyVelocity mượt - không bị rơi
     ✅ Tự chuyển target khi kill xong hoặc hết 60s
-    ✅ Sau respawn tự tìm target mới ngay
 ]]
 
 repeat task.wait() until game:IsLoaded()
@@ -132,7 +132,7 @@ TitleLbl.ZIndex = 5
 local SubLbl = Instance.new("TextLabel", SG)
 SubLbl.Size = UDim2.new(1,0,0,44); SubLbl.Position = UDim2.new(0,0,0.5,-38)
 SubLbl.BackgroundTransparency = 1
-SubLbl.Text = "Kill ALL  •  350 Speed  •  Hop 9-16 Players Server"
+SubLbl.Text = "Kill ALL  •  350 Speed  •  Spam Hop 9-16 Players"
 SubLbl.TextColor3 = Color3.fromRGB(220,220,220); SubLbl.TextScaled = true
 SubLbl.Font = Enum.Font.Gotham; SubLbl.TextStrokeTransparency = 0.3
 SubLbl.TextStrokeColor3 = Color3.fromRGB(0,0,0); SubLbl.ZIndex = 5
@@ -453,66 +453,114 @@ local function GoSafe()
 end
 
 -- ══════════════════════════════════════════════
--- SERVER HOP — ưu tiên server 9-16 người
+-- SERVER HOP — SPAM HOP liên tục đến khi vào được
 -- ══════════════════════════════════════════════
-local isHopping = false
-local function HopServer()
-    if isHopping then return end
-    isHopping = true
-    StatusLbl.Text = "🌐  Hopping server..."
-    TargetLbl.Text = "🔄  Finding server with more players..."
-    if HRP then HRP.CFrame = HRP.CFrame * CFrame.new(0, 9999, 0) end
-    task.wait(1.5)
+local isHopping   = false
+local hopAttempt  = 0
 
-    local hopOk = pcall(function()
-        -- sortOrder=Desc = server nhiều người nhất lên đầu
+-- Cache server list để không spam API
+local cachedServers = {}
+local lastFetch     = 0
+
+local function FetchServers()
+    -- Chỉ fetch lại sau 15s
+    if tick() - lastFetch < 15 and #cachedServers > 0 then
+        return cachedServers
+    end
+    lastFetch   = tick()
+    cachedServers = {}
+
+    pcall(function()
         local url  = "https://games.roblox.com/v1/games/"..game.PlaceId.."/servers/Public?sortOrder=Desc&limit=100"
         local raw  = game:HttpGet(url)
         local data = HttpService:JSONDecode(raw)
 
-        local preferred = {} -- 9-16 người
-        local fallback  = {} -- bất kỳ server có người
+        local preferred = {}
+        local fallback  = {}
 
         for _, s in pairs(data.data or {}) do
             if s.id == game.JobId then continue end
-            if table.find(CFG.JoinedServers, s.id) then continue end
-
-            local playing    = tonumber(s.playing) or 0
-            local maxPlayers = tonumber(s.maxPlayers) or 20
-
+            local playing = tonumber(s.playing) or 0
             if playing >= CFG.MinHopPlayers and playing <= CFG.MaxHopPlayers then
                 table.insert(preferred, {id=s.id, playing=playing})
             elseif playing >= 3 then
-                -- Fallback: ít nhất 3 người
                 table.insert(fallback, {id=s.id, playing=playing})
             end
         end
 
-        -- Sắp xếp: nhiều người nhất lên đầu
         table.sort(preferred, function(a,b) return a.playing > b.playing end)
         table.sort(fallback,  function(a,b) return a.playing > b.playing end)
 
-        local list = #preferred > 0 and preferred or fallback
-
-        if #list > 0 then
-            -- Chọn random trong top 3 nhiều người nhất
-            local topN   = math.min(3, #list)
-            local chosen = list[math.random(1, topN)]
-            table.insert(CFG.JoinedServers, chosen.id)
-            print("🌐 Hopping → "..chosen.playing.." players | "..chosen.id)
-            StatusLbl.Text = "🌐  Joining ("..chosen.playing.." players)..."
-            task.wait(0.5)
-            TeleportSvc:TeleportToPlaceInstance(game.PlaceId, chosen.id, lp)
-        else
-            print("⚠️ No servers found — reset list")
-            CFG.JoinedServers = {}
-            isHopping = false
-        end
+        for _, s in pairs(preferred) do table.insert(cachedServers, s) end
+        for _, s in pairs(fallback)  do table.insert(cachedServers, s) end
     end)
 
-    if not hopOk then
-        isHopping = false
-    end
+    return cachedServers
+end
+
+local function HopServer()
+    if isHopping then return end
+    isHopping  = true
+    hopAttempt = 0
+
+    StatusLbl.Text = "🌐  Spam Hopping..."
+    TargetLbl.Text = "🔄  Scanning servers 9-16 players..."
+    if HRP then HRP.CFrame = HRP.CFrame * CFrame.new(0, 9999, 0) end
+    task.wait(0.3)
+
+    task.spawn(function()
+        while isHopping do
+            hopAttempt = hopAttempt + 1
+
+            local servers = FetchServers()
+
+            -- Lọc server chưa thử
+            local candidates = {}
+            for _, s in pairs(servers) do
+                if not table.find(CFG.JoinedServers, s.id) then
+                    table.insert(candidates, s)
+                end
+            end
+
+            -- Hết tất cả server → xóa cache + list rồi thử lại ngay
+            if #candidates == 0 then
+                print("♻️ Attempt "..hopAttempt.." — No more servers, resetting...")
+                CFG.JoinedServers = {}
+                cachedServers     = {}
+                lastFetch         = 0
+                StatusLbl.Text = "♻️  Reset list, re-fetching... (#"..hopAttempt..")"
+                task.wait(1.5)
+                continue
+            end
+
+            -- Lấy server nhiều người nhất chưa thử
+            local chosen = candidates[1]
+            table.insert(CFG.JoinedServers, chosen.id)
+
+            print("🌐 Hop #"..hopAttempt.." → "..chosen.playing.." players | "..chosen.id)
+            StatusLbl.Text = "🌐  #"..hopAttempt.." → "..chosen.playing.." players"
+            TargetLbl.Text = "🚀  Teleporting now..."
+
+            -- Fire teleport
+            local teleOk = pcall(function()
+                TeleportSvc:TeleportToPlaceInstance(game.PlaceId, chosen.id, lp)
+            end)
+
+            if teleOk then
+                -- Chờ 6s xem có load vào server không
+                -- Nếu vẫn còn đây nghĩa là teleport thất bại → thử tiếp ngay
+                task.wait(6)
+                if isHopping then
+                    print("⚠️ Hop #"..hopAttempt.." failed (still here), next server...")
+                    StatusLbl.Text = "⚠️  Hop #"..hopAttempt.." failed, trying next..."
+                end
+            else
+                print("❌ Hop #"..hopAttempt.." pcall error, next server...")
+                StatusLbl.Text = "❌  Error #"..hopAttempt..", retrying..."
+                task.wait(0.5)
+            end
+        end
+    end)
 end
 
 -- ══════════════════════════════════════════════
@@ -568,7 +616,7 @@ end)
 task.spawn(function()
     task.wait(1)
     print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    print("🔍 SWITCH HUB V6 — KILL ALL MODE")
+    print("🔍 SWITCH HUB V7 — KILL ALL + SPAM HOP")
     print("👥 Players: "..#Players:GetPlayers())
     for _, p in pairs(Players:GetPlayers()) do
         if p ~= lp then
@@ -599,6 +647,7 @@ task.spawn(function()
                 local t = FindTarget()
                 if t then
                     noTargetTime = 0
+                    isHopping    = false  -- Dừng spam hop vì đã có target
                     SetTarget(t)
                 else
                     noTargetTime = noTargetTime + 0.05
@@ -621,6 +670,7 @@ task.spawn(function()
 
             -- Target chết → chọn ngay target mới
             if not tRoot or not tHum or tHum.Health <= 0 then
+                isHopping = false  -- Dừng hop nếu đang hop
                 SetTarget(FindTarget())
                 return
             end
@@ -699,9 +749,9 @@ end)
 
 pcall(function()
     game:GetService("StarterGui"):SetCore("SendNotification", {
-        Title="Switch Hub V6",
-        Text="✅ Kill ALL | 350 Speed | Hop 9-16 Players",
+        Title="Switch Hub V7",
+        Text="✅ Kill ALL | Spam Hop 9-16 Players",
         Duration=5
     })
 end)
-print("✅ Switch Hub V6 — Kill ALL | 350 Speed Ready!")
+print("✅ Switch Hub V7 — Kill ALL | Spam Hop Ready!")
