@@ -1,15 +1,16 @@
 --[[
     ╔═══════════════════════════════════════════════════════════╗
-    ║         Switch Hub - Bounty Hunting Ultimate V9           ║
+    ║         Switch Hub - Bounty Hunting Ultimate V10          ║
     ║                    By: tbobiito                           ║
     ╚═══════════════════════════════════════════════════════════╝
-    V9 FIX:
-    ✅ Chuyển target ngay khi kill xong / target vào safe zone
-    ✅ Vừa spam skill vừa bám sát target liên tục (không dừng lại)
-    ✅ Noclip bật ngay khi load script - không cần bấm nút
-    ✅ Chuyển Melee ↔ Sword mỗi 3s để spam skill tối đa
+    V10 FIX:
+    ✅ Spam skill KHÔNG bị rớt - tách riêng luồng skill khỏi bay
+    ✅ Tự equip Melee và Sword đúng loại, chuyển qua lại 3s/lần
+    ✅ Bám sát target liên tục trong khi spam skill
+    ✅ Timer 60s chỉ bắt đầu đếm KHI ĐÃ ĐẾN GẦN target
+    ✅ Chuyển target ngay khi safe zone / kill xong
+    ✅ Noclip bật tự động khi load
     ✅ SPAM HOP liên tục khi hết player
-    ✅ Kill TẤT CẢ - không giới hạn level
 ]]
 
 repeat task.wait() until game:IsLoaded()
@@ -51,16 +52,16 @@ local CFG = {
 -- STATE
 -- ══════════════════════════════════════════════
 local ST = {
-    On           = true,
-    Noclip       = true,   -- Noclip BẬT NGAY khi load script
-    Target       = nil,
-    HuntStart    = tick(),
-    Flying       = false,
-    InSafe       = false,
-    Arrived      = false,
-    WeaponPhase  = "Melee",
-    PhaseTimer   = tick(),
-    CurrentTween = nil,
+    On            = true,
+    Noclip        = true,
+    Target        = nil,
+    HuntStart     = nil,   -- nil = chưa bắt đầu, chỉ set khi Arrived lần đầu
+    Flying        = false,
+    InSafe        = false,
+    Arrived       = false,
+    WeaponPhase   = "Melee",
+    PhaseTimer    = tick(),
+    CurrentTween  = nil,
 }
 
 -- ══════════════════════════════════════════════
@@ -247,35 +248,91 @@ local function FireAttack(targets)
 end
 
 -- ══════════════════════════════════════════════
--- SPAM SKILL
+-- SPAM SKILL — dùng task.spawn để không yield loop bay
 -- ══════════════════════════════════════════════
 local lastSkillTime = {}
 local function SpamSkill()
-    local keys = ST.WeaponPhase == "Melee" and CFG.SkillKeys.Melee or CFG.SkillKeys.Sword
-    for _, k in pairs(keys) do
-        local id = tostring(k.Value)
-        if not lastSkillTime[id] or tick() - lastSkillTime[id] > 0.2 then
-            lastSkillTime[id] = tick()
-            VIM:SendKeyEvent(true, k, false, game)
-            task.wait(0.02)
-            VIM:SendKeyEvent(false, k, false, game)
+    -- Chạy trong task.spawn riêng để không block/yield FlyToTarget loop
+    task.spawn(function()
+        local keys = ST.WeaponPhase == "Melee" and CFG.SkillKeys.Melee or CFG.SkillKeys.Sword
+        for _, k in pairs(keys) do
+            local id = tostring(k.Value)
+            if not lastSkillTime[id] or tick() - lastSkillTime[id] > 0.15 then
+                lastSkillTime[id] = tick()
+                pcall(function()
+                    VIM:SendKeyEvent(true,  k, false, game)
+                    task.wait(0.02)
+                    VIM:SendKeyEvent(false, k, false, game)
+                end)
+            end
         end
-    end
+    end)
 end
 
 -- ══════════════════════════════════════════════
--- EQUIP
+-- EQUIP — phân biệt Melee và Sword
 -- ══════════════════════════════════════════════
-local function EquipAny()
-    if not Char then return end
-    for _, tool in pairs(lp.Backpack:GetChildren()) do
-        if tool:IsA("Tool") then
+local function GetAllTools()
+    local tools = {}
+    for _, t in pairs(lp.Backpack:GetChildren()) do
+        if t:IsA("Tool") then table.insert(tools, t) end
+    end
+    for _, t in pairs(Char and Char:GetChildren() or {}) do
+        if t:IsA("Tool") then table.insert(tools, t) end
+    end
+    return tools
+end
+
+local function EquipMelee()
+    -- Melee = tool không có "sword","katana","blade","gun","pistol" trong tên
+    if not Char or not Hum then return end
+    local tools = GetAllTools()
+    for _, tool in pairs(tools) do
+        local name = tool.Name:lower()
+        local isSword = name:find("sword") or name:find("katana") or name:find("blade")
+                     or name:find("gun")   or name:find("pistol") or name:find("rifle")
+                     or name:find("knife") or name:find("dagger")
+        if not isSword then
             pcall(function() Hum:EquipTool(tool) end)
             return tool
         end
     end
-    for _, tool in pairs(Char:GetChildren()) do
-        if tool:IsA("Tool") then return tool end
+    -- Nếu không tìm được melee đặc trưng, equip tool đầu tiên
+    if #tools > 0 then
+        pcall(function() Hum:EquipTool(tools[1]) end)
+        return tools[1]
+    end
+end
+
+local function EquipSword()
+    -- Sword = tool có "sword","katana","blade","saber","cutlass" trong tên
+    if not Char or not Hum then return end
+    local tools = GetAllTools()
+    for _, tool in pairs(tools) do
+        local name = tool.Name:lower()
+        local isSword = name:find("sword") or name:find("katana") or name:find("blade")
+                     or name:find("saber") or name:find("cutlass") or name:find("rapier")
+        if isSword then
+            pcall(function() Hum:EquipTool(tool) end)
+            return tool
+        end
+    end
+    -- Nếu không tìm được sword đặc trưng, equip tool thứ 2 (nếu có)
+    local tools2 = GetAllTools()
+    if #tools2 >= 2 then
+        pcall(function() Hum:EquipTool(tools2[2]) end)
+        return tools2[2]
+    elseif #tools2 == 1 then
+        pcall(function() Hum:EquipTool(tools2[1]) end)
+        return tools2[1]
+    end
+end
+
+local function EquipAny()
+    if ST.WeaponPhase == "Melee" then
+        return EquipMelee()
+    else
+        return EquipSword()
     end
 end
 
@@ -293,8 +350,8 @@ local function MakeHitbox(p)
 end
 
 -- ══════════════════════════════════════════════
--- FLY + CHASE SYSTEM - BÁM SÁT TARGET LIÊN TỤC
--- Không dừng bay khi đến gần, luôn bám vào target
+-- FLY + CHASE — BodyVelocity, không dùng PlatformStand
+-- Spam skill chạy riêng task.spawn để không block loop bay
 -- ══════════════════════════════════════════════
 StopFly = function()
     ST.Flying = false
@@ -305,15 +362,13 @@ StopFly = function()
     pcall(function()
         if HRP then
             for _, v in pairs(HRP:GetChildren()) do
-                if v:IsA("BodyVelocity") or v:IsA("BodyGyro") then
+                if v:IsA("BodyVelocity") or v:IsA("BodyGyro") or v:IsA("BodyPosition") then
                     v:Destroy()
                 end
             end
         end
     end)
-    pcall(function()
-        if Hum then Hum.PlatformStand = false end
-    end)
+    -- KHÔNG đặt PlatformStand ở đây — để humanoid tự xử lý đứng/ngồi
 end
 
 local function FlyToTarget()
@@ -323,106 +378,98 @@ local function FlyToTarget()
     ST.Flying = true
 
     task.spawn(function()
+        -- BodyVelocity: điều khiển hướng bay
         local bv = Instance.new("BodyVelocity")
-        bv.MaxForce = Vector3.new(1e6, 1e6, 1e6)
-        bv.Velocity  = Vector3.zero
-        bv.Parent    = HRP
+        bv.MaxForce = Vector3.new(1e9, 1e9, 1e9)
+        bv.Velocity = Vector3.zero
+        bv.Parent   = HRP
 
+        -- BodyGyro: giữ hướng mặt (không lăn)
         local bg = Instance.new("BodyGyro")
-        bg.MaxTorque = Vector3.new(1e6, 1e6, 1e6)
-        bg.D = 100; bg.P = 1e4
+        bg.MaxTorque = Vector3.new(0, 1e9, 0)  -- chỉ xoay trục Y, không lật người
+        bg.D  = 200
+        bg.P  = 3000
         bg.Parent = HRP
 
-        pcall(function() if Hum then Hum.PlatformStand = true end end)
+        while ST.Flying and ST.Target do
+            -- Kiểm tra target còn hợp lệ không
+            local tc2 = ST.Target and ST.Target.Character
+            if not tc2 or not HRP then break end
+            local tRoot = tc2:FindFirstChild("HumanoidRootPart")
+            if not tRoot then break end
 
-        while ST.Flying and ST.Target and ST.Target.Character do
-            local ok = pcall(function()
-                local tc2   = ST.Target.Character
-                if not tc2 then StopFly(); return end
-                local tRoot = tc2:FindFirstChild("HumanoidRootPart")
-                if not tRoot or not HRP then StopFly(); return end
+            local targetPos  = tRoot.Position + Vector3.new(0, 2, 0)
+            local currentPos = HRP.Position
+            local dist       = (targetPos - currentPos).Magnitude
 
-                local targetPos  = tRoot.Position + Vector3.new(0, 2, 0)
-                local currentPos = HRP.Position
-                local dist       = (targetPos - currentPos).Magnitude
+            -- Luôn hướng mặt về target (chỉ trục Y)
+            bg.CFrame = CFrame.new(currentPos, Vector3.new(targetPos.X, currentPos.Y, targetPos.Z))
 
-                bg.CFrame = CFrame.lookAt(currentPos, targetPos)
-
-                if dist <= CFG.AttackDist then
-                    -- ĐÃ ĐẾN GẦN: đánh + bám sát, không dừng hẳn
+            if dist <= CFG.AttackDist then
+                -- ĐÃ SÁT TARGET: đứng yên, đánh
+                bv.Velocity = Vector3.zero
+                if not ST.Arrived then
                     ST.Arrived = true
-                    bv.Velocity = Vector3.zero  -- Đứng yên tại chỗ khi gần
-
-                    -- Attack ngay trong loop bay
-                    FireAttack(GetAttackTargets())
-                    SpamSkill()
-                elseif dist <= CFG.AttackDist + 5 then
-                    -- Vùng đệm: vừa di chuyển nhẹ vừa đánh
-                    ST.Arrived = true
-                    local dir = (targetPos - currentPos).Unit
-                    bv.Velocity = dir * 50  -- di chuyển chậm để không overshooting
-                    FireAttack(GetAttackTargets())
-                    SpamSkill()
-                else
-                    -- Còn xa: bay nhanh về target
-                    ST.Arrived = false
-                    local dir = (targetPos - currentPos).Unit
-                    bv.Velocity = dir * CFG.FlySpeed
+                    -- Bắt đầu đếm thời gian 60s từ khi arrived
+                    if not ST.HuntStart then
+                        ST.HuntStart = tick()
+                        print("⏱ Timer started — arrived at "..ST.Target.Name)
+                    end
                 end
-            end)
-            if not ok then break end
+                -- Attack trong task.spawn riêng — KHÔNG yield loop này
+                task.spawn(function()
+                    FireAttack(GetAttackTargets())
+                end)
+                SpamSkill()
+
+            elseif dist <= CFG.AttackDist + 8 then
+                -- VÙNG ĐỆM: tiến chậm vào và đánh
+                local dir = (targetPos - currentPos).Unit
+                bv.Velocity = dir * 60
+                ST.Arrived = true
+                if not ST.HuntStart then
+                    ST.HuntStart = tick()
+                end
+                task.spawn(function()
+                    FireAttack(GetAttackTargets())
+                end)
+                SpamSkill()
+
+            else
+                -- CÒN XA: bay nhanh
+                ST.Arrived = false
+                local dir = (targetPos - currentPos).Unit
+                bv.Velocity = dir * CFG.FlySpeed
+            end
+
             task.wait(0.05)
         end
 
+        -- Dọn dẹp
         pcall(function() bv:Destroy() end)
         pcall(function() bg:Destroy() end)
-        pcall(function() if Hum then Hum.PlatformStand = false end end)
+        ST.Flying = false
     end)
 end
 
 -- ══════════════════════════════════════════════
--- ATTACK LOOP DỰ PHÒNG (nếu không đang fly)
+-- WEAPON PHASE SWITCH: Melee ↔ Sword mỗi 3s
 -- ══════════════════════════════════════════════
 task.spawn(function()
-    while task.wait(0.05) do
-        if not ST.On or not ST.Arrived or not ST.Target then continue end
-        if ST.Flying then continue end  -- đã xử lý trong FlyToTarget rồi
+    while task.wait(3) do
+        if not ST.On or not ST.Target or not ST.Arrived then continue end
         pcall(function()
-            if not HRP or not ST.Target.Character then return end
-            local tRoot = ST.Target.Character:FindFirstChild("HumanoidRootPart")
-            if not tRoot then return end
-            local dist = (tRoot.Position - HRP.Position).Magnitude
-            if dist <= CFG.AttackDist + 5 then
-                FireAttack(GetAttackTargets())
-                SpamSkill()
-            end
-        end)
-    end
-end)
-
--- Weapon phase switch: đổi Melee ↔ Sword mỗi 3s để spam skill tối đa
-task.spawn(function()
-    while task.wait(0.1) do
-        if not ST.On then continue end
-        if not ST.Target then continue end
-        -- Chuyển phase mỗi 3s
-        if tick() - ST.PhaseTimer >= 3 then
-            ST.PhaseTimer = tick()
+            -- Chuyển phase
             ST.WeaponPhase = (ST.WeaponPhase == "Melee" and "Sword" or "Melee")
-            -- Equip vũ khí tương ứng
-            pcall(function()
-                if not Char then return end
-                -- Tìm và equip tool theo phase
-                local targetType = ST.WeaponPhase  -- "Melee" hoặc "Sword"
-                -- Thử equip từ backpack
-                for _, tool in pairs(lp.Backpack:GetChildren()) do
-                    if tool:IsA("Tool") then
-                        pcall(function() Hum:EquipTool(tool) end)
-                        break
-                    end
-                end
-            end)
-        end
+            ST.PhaseTimer  = tick()
+            -- Equip đúng loại vũ khí
+            if ST.WeaponPhase == "Melee" then
+                EquipMelee()
+            else
+                EquipSword()
+            end
+            print("🔄 Phase → "..ST.WeaponPhase)
+        end)
     end
 end)
 
@@ -605,9 +652,9 @@ end
 -- ══════════════════════════════════════════════
 SetTarget = function(p)
     StopFly()
-    ST.Target    = p
-    ST.Arrived   = false
-    ST.HuntStart = tick()
+    ST.Target     = p
+    ST.Arrived    = false
+    ST.HuntStart  = nil    -- Timer chỉ bắt đầu khi đã đến gần target
     ST.PhaseTimer = tick()
 
     if p then
@@ -616,6 +663,7 @@ SetTarget = function(p)
         print("✅ TARGET: "..p.Name.." | Bounty: "..bounty)
         TargetLbl.Text = "🎯  "..p.Name.." | 💰"..bounty
         StatusLbl.Text = "🚀  Flying to "..p.Name.."..."
+        TimerLbl.Text  = "⏱ Chưa đến..."
         MakeHitbox(p)
         EquipAny()
         FlyToTarget()
@@ -708,22 +756,22 @@ task.spawn(function()
             local tRoot = tc and tc:FindFirstChild("HumanoidRootPart")
             local tHum  = tc and tc:FindFirstChild("Humanoid")
 
-            -- Target chết → chuyển ngay
+            -- Target chết / mất → chuyển ngay
             if not tRoot or not tHum or tHum.Health <= 0 then
                 isHopping = false
+                stuckHPTimer = 0
                 SetTarget(FindTarget())
                 return
             end
 
-            -- ★ DETECT SAFE ZONE: Nếu HP target không giảm trong 5s khi đang đánh → target trong safe zone → chuyển ngay
+            -- ★ DETECT SAFE ZONE: HP không giảm trong 5s khi đang đánh → safe zone → skip
             if ST.Arrived then
                 local currentHP = tHum.Health
-                if currentHP >= lastTargetHP - 1 then
-                    -- HP không giảm (đang đánh mà không hao máu = safe zone)
+                if currentHP >= lastTargetHP - 0.5 then
                     stuckHPTimer = stuckHPTimer + 0.05
                     if stuckHPTimer >= 5 then
                         stuckHPTimer = 0
-                        print("⚠️ Target "..ST.Target.Name.." in safe zone! Switching...")
+                        print("⚠️ Safe zone detected! Switching from "..ST.Target.Name)
                         table.insert(CFG.SkipList, ST.Target.Name)
                         task.delay(60, function()
                             local idx = table.find(CFG.SkipList, ST.Target and ST.Target.Name or "")
@@ -734,8 +782,7 @@ task.spawn(function()
                         return
                     end
                 else
-                    -- HP đang giảm: reset timer
-                    stuckHPTimer = 0
+                    stuckHPTimer = 0  -- HP đang giảm, reset
                 end
                 lastTargetHP = currentHP
             else
@@ -743,20 +790,25 @@ task.spawn(function()
                 lastTargetHP = tHum.Health
             end
 
-            -- 60s → đổi target
-            local elapsed   = tick() - ST.HuntStart
-            local remaining = math.max(0, CFG.MaxHuntTime - elapsed)
-            TimerLbl.Text = "⏱ "..math.floor(remaining).."s | "..ST.Target.Name
+            -- Timer 60s — chỉ tính khi đã arrived
+            if ST.HuntStart then
+                local elapsed   = tick() - ST.HuntStart
+                local remaining = math.max(0, CFG.MaxHuntTime - elapsed)
+                TimerLbl.Text   = "⏱ "..math.floor(remaining).."s | "..ST.Target.Name
 
-            if elapsed >= CFG.MaxHuntTime then
-                table.insert(CFG.SkipList, ST.Target.Name)
-                task.delay(180, function()
-                    local idx = table.find(CFG.SkipList, ST.Target and ST.Target.Name or "")
-                    if idx then table.remove(CFG.SkipList, idx) end
-                end)
-                local nxt = FindTarget()
-                if nxt then SetTarget(nxt) else HopServer() end
-                return
+                if elapsed >= CFG.MaxHuntTime then
+                    print("⏰ 60s up — switching from "..ST.Target.Name)
+                    table.insert(CFG.SkipList, ST.Target.Name)
+                    task.delay(180, function()
+                        local idx = table.find(CFG.SkipList, ST.Target and ST.Target.Name or "")
+                        if idx then table.remove(CFG.SkipList, idx) end
+                    end)
+                    local nxt = FindTarget()
+                    if nxt then SetTarget(nxt) else HopServer() end
+                    return
+                end
+            else
+                TimerLbl.Text = "⏱ Bay đến target..."
             end
 
             -- Update UI
@@ -764,15 +816,15 @@ task.spawn(function()
             local bounty = ST.Target:GetAttribute("Bounty") or 0
             TargetLbl.Text = "🎯  "..ST.Target.Name.." | "..math.floor(dist).."m | ❤"..math.floor(tHum.Health).." | 💰"..bounty
 
-            -- Luôn bám target: nếu chưa flying thì bay lại ngay
+            -- Luôn bay/bám — nếu không flying thì khởi động lại
             if not ST.Flying then
                 StatusLbl.Text = (dist <= CFG.AttackDist)
                     and "⚔  Attacking "..ST.Target.Name.." | "..ST.WeaponPhase
-                    or  "🚀  Flying → "..ST.Target.Name
+                    or  "🚀  Re-flying → "..ST.Target.Name
                 FlyToTarget()
             else
-                StatusLbl.Text = (dist <= CFG.AttackDist)
-                    and "⚔  Attacking + Chasing "..ST.Target.Name
+                StatusLbl.Text = (ST.Arrived)
+                    and "⚔  Attacking + Chasing | "..ST.WeaponPhase
                     or  "🚀  Flying → "..ST.Target.Name.." ("..math.floor(dist).."m)"
             end
         end)
@@ -876,9 +928,9 @@ end)
 
 pcall(function()
     game:GetService("StarterGui"):SetCore("SendNotification", {
-        Title="Switch Hub V9",
-        Text="✅ Noclip AUTO | Safe Zone Detect | Chase+Attack",
+        Title="Switch Hub V10",
+        Text="✅ No-Fall Skill | Auto Equip | Timer Fix!",
         Duration=5
     })
 end)
-print("✅ Switch Hub V9 — Noclip AUTO | Chase+Attack | Safe Zone Skip!")
+print("✅ Switch Hub V10 — No-Fall Skill | Auto Equip Melee/Sword | Timer on Arrive!")
