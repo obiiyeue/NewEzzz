@@ -1,13 +1,13 @@
 --[[
     ╔═══════════════════════════════════════════════════════════╗
-    ║         Switch Hub - Bounty Hunting Ultimate V10          ║
+    ║         Switch Hub - Bounty Hunting Ultimate V11          ║
     ║                    By: tbobiito                           ║
     ╚═══════════════════════════════════════════════════════════╝
-    V10 FIX:
-    ✅ Spam skill KHÔNG bị rớt - tách riêng luồng skill khỏi bay
-    ✅ Tự equip Melee và Sword đúng loại, chuyển qua lại 3s/lần
-    ✅ Bám sát target liên tục trong khi spam skill
-    ✅ Timer 60s chỉ bắt đầu đếm KHI ĐÃ ĐẾN GẦN target
+    V11 FIX:
+    ✅ FIX Equip Melee/Sword đúng - dùng slot index thay vì tên
+    ✅ FIX Spam skill KHÔNG rớt - BodyPosition giữ Y khi attack
+    ✅ FIX Bám sát target + giữ vị trí khi spam skill
+    ✅ FIX Timer 60s chỉ bắt đầu KHI ĐÃ ĐẾN GẦN target
     ✅ Chuyển target ngay khi safe zone / kill xong
     ✅ Noclip bật tự động khi load
     ✅ SPAM HOP liên tục khi hết player
@@ -284,48 +284,50 @@ local function GetAllTools()
 end
 
 local function EquipMelee()
-    -- Melee = tool không có "sword","katana","blade","gun","pistol" trong tên
+    -- Melee = tool KHÔNG phải sword (không có tên sword/katana/blade...)
+    -- Ưu tiên: filter theo tên, nếu không có thì lấy slot 1
     if not Char or not Hum then return end
     local tools = GetAllTools()
+    if #tools == 0 then return end
+
+    -- Thử tìm tool không phải sword
     for _, tool in pairs(tools) do
         local name = tool.Name:lower()
         local isSword = name:find("sword") or name:find("katana") or name:find("blade")
                      or name:find("gun")   or name:find("pistol") or name:find("rifle")
-                     or name:find("knife") or name:find("dagger")
+                     or name:find("knife") or name:find("dagger") or name:find("saber")
+                     or name:find("cutlass") or name:find("rapier")
         if not isSword then
             pcall(function() Hum:EquipTool(tool) end)
             return tool
         end
     end
-    -- Nếu không tìm được melee đặc trưng, equip tool đầu tiên
-    if #tools > 0 then
-        pcall(function() Hum:EquipTool(tools[1]) end)
-        return tools[1]
-    end
+    -- Fallback: lấy tool slot 1
+    pcall(function() Hum:EquipTool(tools[1]) end)
+    return tools[1]
 end
 
 local function EquipSword()
-    -- Sword = tool có "sword","katana","blade","saber","cutlass" trong tên
+    -- Sword = tool có tên sword/katana/blade/saber/cutlass/rapier
+    -- Fallback: lấy slot 2 (thường là sword trong Blox Fruits)
     if not Char or not Hum then return end
     local tools = GetAllTools()
+    if #tools == 0 then return end
+
     for _, tool in pairs(tools) do
         local name = tool.Name:lower()
         local isSword = name:find("sword") or name:find("katana") or name:find("blade")
                      or name:find("saber") or name:find("cutlass") or name:find("rapier")
+                     or name:find("knife") or name:find("dagger")
         if isSword then
             pcall(function() Hum:EquipTool(tool) end)
             return tool
         end
     end
-    -- Nếu không tìm được sword đặc trưng, equip tool thứ 2 (nếu có)
-    local tools2 = GetAllTools()
-    if #tools2 >= 2 then
-        pcall(function() Hum:EquipTool(tools2[2]) end)
-        return tools2[2]
-    elseif #tools2 == 1 then
-        pcall(function() Hum:EquipTool(tools2[1]) end)
-        return tools2[1]
-    end
+    -- Fallback: slot 2 (nếu có), nếu không thì slot 1
+    local fallback = tools[2] or tools[1]
+    pcall(function() Hum:EquipTool(fallback) end)
+    return fallback
 end
 
 local function EquipAny()
@@ -362,7 +364,7 @@ StopFly = function()
     pcall(function()
         if HRP then
             for _, v in pairs(HRP:GetChildren()) do
-                if v:IsA("BodyVelocity") or v:IsA("BodyGyro") or v:IsA("BodyPosition") then
+                if v:IsA("BodyVelocity") or v:IsA("BodyGyro") or v:IsA("BodyPosition") or v:IsA("BodyForce") then
                     v:Destroy()
                 end
             end
@@ -391,6 +393,14 @@ local function FlyToTarget()
         bg.P  = 3000
         bg.Parent = HRP
 
+        -- BodyPosition: giữ Y khi đang attack để không bị rớt xuống biển
+        local bp = Instance.new("BodyPosition")
+        bp.MaxForce = Vector3.new(0, 0, 0)  -- tắt mặc định, chỉ bật khi attack
+        bp.D = 500
+        bp.P = 10000
+        bp.Position = HRP.Position
+        bp.Parent   = HRP
+
         while ST.Flying and ST.Target do
             -- Kiểm tra target còn hợp lệ không
             local tc2 = ST.Target and ST.Target.Character
@@ -406,8 +416,11 @@ local function FlyToTarget()
             bg.CFrame = CFrame.new(currentPos, Vector3.new(targetPos.X, currentPos.Y, targetPos.Z))
 
             if dist <= CFG.AttackDist then
-                -- ĐÃ SÁT TARGET: đứng yên, đánh
+                -- ĐÃ SÁT TARGET: bật BodyPosition giữ Y để không rớt khi spam skill
                 bv.Velocity = Vector3.zero
+                bp.MaxForce = Vector3.new(0, 1e9, 0)  -- chỉ giữ trục Y
+                bp.Position = Vector3.new(currentPos.X, targetPos.Y, currentPos.Z)
+
                 if not ST.Arrived then
                     ST.Arrived = true
                     -- Bắt đầu đếm thời gian 60s từ khi arrived
@@ -426,6 +439,8 @@ local function FlyToTarget()
                 -- VÙNG ĐỆM: tiến chậm vào và đánh
                 local dir = (targetPos - currentPos).Unit
                 bv.Velocity = dir * 60
+                bp.MaxForce = Vector3.new(0, 1e9, 0)  -- vẫn giữ Y
+                bp.Position = Vector3.new(currentPos.X, targetPos.Y, currentPos.Z)
                 ST.Arrived = true
                 if not ST.HuntStart then
                     ST.HuntStart = tick()
@@ -436,7 +451,8 @@ local function FlyToTarget()
                 SpamSkill()
 
             else
-                -- CÒN XA: bay nhanh
+                -- CÒN XA: bay nhanh, tắt BodyPosition giữ Y
+                bp.MaxForce = Vector3.new(0, 0, 0)
                 ST.Arrived = false
                 local dir = (targetPos - currentPos).Unit
                 bv.Velocity = dir * CFG.FlySpeed
@@ -448,6 +464,7 @@ local function FlyToTarget()
         -- Dọn dẹp
         pcall(function() bv:Destroy() end)
         pcall(function() bg:Destroy() end)
+        pcall(function() bp:Destroy() end)
         ST.Flying = false
     end)
 end
@@ -701,7 +718,7 @@ end)
 task.spawn(function()
     task.wait(1)
     print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    print("🔍 SWITCH HUB V7 — KILL ALL + SPAM HOP")
+    print("🔍 SWITCH HUB V11 — KILL ALL + SPAM HOP")
     print("👥 Players: "..#Players:GetPlayers())
     for _, p in pairs(Players:GetPlayers()) do
         if p ~= lp then
@@ -929,8 +946,8 @@ end)
 pcall(function()
     game:GetService("StarterGui"):SetCore("SendNotification", {
         Title="Switch Hub V10",
-        Text="✅ No-Fall Skill | Auto Equip | Timer Fix!",
+        Text="✅ V11: Fix No-Fall | Auto Equip | Timer Fix!",
         Duration=5
     })
 end)
-print("✅ Switch Hub V10 — No-Fall Skill | Auto Equip Melee/Sword | Timer on Arrive!")
+print("✅ Switch Hub V11 — No-Fall Fix | Equip Melee/Sword | Timer on Arrive!")
