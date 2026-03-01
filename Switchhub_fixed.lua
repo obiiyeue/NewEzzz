@@ -1,15 +1,16 @@
 --[[
     ╔═══════════════════════════════════════════════════════════╗
-    ║         Switch Hub - Bounty Hunting Ultimate V7           ║
+    ║         Switch Hub - Bounty Hunting Ultimate V8           ║
     ║                    By: tbobiito                           ║
     ╚═══════════════════════════════════════════════════════════╝
-    V7 UPDATE:
+    V8 UPDATE:
     ✅ Kill TẤT CẢ player trong server - không giới hạn level
     ✅ SPAM HOP liên tục khi hết player — thử server này fail → server khác ngay
     ✅ Cache server list 15s để không spam API
     ✅ Hop ưu tiên server 9-16 người, fallback server 3+ người
     ✅ Bay BodyVelocity mượt - không bị rơi
     ✅ Tự chuyển target khi kill xong hoặc hết 60s
+    ✅ NOCLIP — xuyên tường, xuyên địa hình (nút bên trái)
 ]]
 
 repeat task.wait() until game:IsLoaded()
@@ -52,6 +53,7 @@ local CFG = {
 -- ══════════════════════════════════════════════
 local ST = {
     On           = true,
+    Noclip       = false,  -- Noclip state
     Target       = nil,
     HuntStart    = tick(),
     Flying       = false,
@@ -132,7 +134,7 @@ TitleLbl.ZIndex = 5
 local SubLbl = Instance.new("TextLabel", SG)
 SubLbl.Size = UDim2.new(1,0,0,44); SubLbl.Position = UDim2.new(0,0,0.5,-38)
 SubLbl.BackgroundTransparency = 1
-SubLbl.Text = "Kill ALL  •  350 Speed  •  Spam Hop 9-16 Players"
+SubLbl.Text = "Kill ALL  •  350 Speed  •  Spam Hop  •  Noclip"
 SubLbl.TextColor3 = Color3.fromRGB(220,220,220); SubLbl.TextScaled = true
 SubLbl.Font = Enum.Font.Gotham; SubLbl.TextStrokeTransparency = 0.3
 SubLbl.TextStrokeColor3 = Color3.fromRGB(0,0,0); SubLbl.ZIndex = 5
@@ -171,6 +173,14 @@ ToggleBtn.BackgroundColor3 = Color3.fromRGB(40,200,90); ToggleBtn.BorderSizePixe
 ToggleBtn.Text = "✅  ON"; ToggleBtn.TextColor3 = Color3.fromRGB(255,255,255)
 ToggleBtn.TextSize = 22; ToggleBtn.Font = Enum.Font.GothamBold; ToggleBtn.ZIndex = 10
 Instance.new("UICorner", ToggleBtn).CornerRadius = UDim.new(0,14)
+
+-- Noclip button (bên trái màn hình)
+local NoclipBtn = Instance.new("TextButton", SG)
+NoclipBtn.Size = UDim2.fromOffset(150,55); NoclipBtn.Position = UDim2.new(0,10,0,15)
+NoclipBtn.BackgroundColor3 = Color3.fromRGB(80,80,80); NoclipBtn.BorderSizePixel = 0
+NoclipBtn.Text = "🧱  Noclip OFF"; NoclipBtn.TextColor3 = Color3.fromRGB(255,255,255)
+NoclipBtn.TextSize = 18; NoclipBtn.Font = Enum.Font.GothamBold; NoclipBtn.ZIndex = 10
+Instance.new("UICorner", NoclipBtn).CornerRadius = UDim.new(0,14)
 
 -- ══════════════════════════════════════════════
 -- ATTACK REMOTE
@@ -731,6 +741,72 @@ SkipBtn.MouseButton1Click:Connect(function()
 end)
 
 -- ══════════════════════════════════════════════
+-- NOCLIP — xuyên tường, xuyên địa hình
+-- ══════════════════════════════════════════════
+-- Loop chạy mỗi frame: khi Noclip ON thì set CanCollide = false
+-- cho tất cả Part của character, kể cả khi game reset lại
+local noclipConn = nil
+
+local function SetNoclip(enabled)
+    ST.Noclip = enabled
+
+    if enabled then
+        NoclipBtn.BackgroundColor3 = Color3.fromRGB(0,180,80)
+        NoclipBtn.Text = "👻  Noclip ON"
+
+        -- Kết nối RunService.Stepped để liên tục tắt collision
+        if not noclipConn then
+            noclipConn = RunService.Stepped:Connect(function()
+                pcall(function()
+                    if not ST.Noclip then return end
+                    if not Char then return end
+                    for _, part in pairs(Char:GetDescendants()) do
+                        if part:IsA("BasePart") and part.CanCollide then
+                            part.CanCollide = false
+                        end
+                    end
+                end)
+            end)
+        end
+        print("👻 Noclip ON — xuyên tường!")
+    else
+        NoclipBtn.BackgroundColor3 = Color3.fromRGB(80,80,80)
+        NoclipBtn.Text = "🧱  Noclip OFF"
+
+        -- Ngắt connection
+        if noclipConn then
+            noclipConn:Disconnect()
+            noclipConn = nil
+        end
+
+        -- Khôi phục collision cho character
+        pcall(function()
+            if not Char then return end
+            for _, part in pairs(Char:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    part.CanCollide = true
+                end
+            end
+        end)
+        print("🧱 Noclip OFF")
+    end
+end
+
+NoclipBtn.MouseButton1Click:Connect(function()
+    SetNoclip(not ST.Noclip)
+end)
+
+-- Re-apply noclip sau khi respawn
+lp.CharacterAdded:Connect(function(c)
+    if ST.Noclip then
+        task.wait(0.5)
+        -- disconnect old connection nếu có rồi tạo lại
+        if noclipConn then noclipConn:Disconnect(); noclipConn = nil end
+        SetNoclip(true)
+    end
+end)
+
+-- ══════════════════════════════════════════════
 -- TOGGLE
 -- ══════════════════════════════════════════════
 ToggleBtn.MouseButton1Click:Connect(function()
@@ -749,9 +825,9 @@ end)
 
 pcall(function()
     game:GetService("StarterGui"):SetCore("SendNotification", {
-        Title="Switch Hub V7",
-        Text="✅ Kill ALL | Spam Hop 9-16 Players",
+        Title="Switch Hub V8",
+        Text="✅ Kill ALL | Spam Hop | Noclip Added!",
         Duration=5
     })
 end)
-print("✅ Switch Hub V7 — Kill ALL | Spam Hop Ready!")
+print("✅ Switch Hub V8 — Kill ALL | Spam Hop | Noclip Ready!")
