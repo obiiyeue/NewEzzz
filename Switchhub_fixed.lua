@@ -78,7 +78,7 @@ end
 RefreshChar()
 
 -- Forward declare các hàm dùng trước khi define
-local FindTarget, SetTarget, StopFly
+local FindTarget, SetTarget, StopFly, StopSkillLoop, StartSkillLoop
 
 lp.CharacterAdded:Connect(function(c)
     Char = c
@@ -250,23 +250,43 @@ end
 -- ══════════════════════════════════════════════
 -- SPAM SKILL — dùng task.spawn để không yield loop bay
 -- ══════════════════════════════════════════════
-local lastSkillTime = {}
-local function SpamSkill()
-    -- Chạy trong task.spawn riêng để không block/yield FlyToTarget loop
+-- SPAM SKILL — 1 thread riêng, KHÔNG spawn mới mỗi frame
+-- ══════════════════════════════════════════════
+local skillLoopRunning = false
+
+StartSkillLoop = function()
+    if skillLoopRunning then return end
+    skillLoopRunning = true
     task.spawn(function()
-        local keys = ST.WeaponPhase == "Melee" and CFG.SkillKeys.Melee or CFG.SkillKeys.Sword
-        for _, k in pairs(keys) do
-            local id = tostring(k.Value)
-            if not lastSkillTime[id] or tick() - lastSkillTime[id] > 0.15 then
-                lastSkillTime[id] = tick()
-                pcall(function()
-                    VIM:SendKeyEvent(true,  k, false, game)
-                    task.wait(0.02)
-                    VIM:SendKeyEvent(false, k, false, game)
-                end)
+        while skillLoopRunning do
+            -- Chỉ spam khi đã arrived và đang attack
+            if ST.On and ST.Arrived and ST.Target then
+                local keys = ST.WeaponPhase == "Melee" and CFG.SkillKeys.Melee or CFG.SkillKeys.Sword
+                for _, k in ipairs(keys) do
+                    if not skillLoopRunning then break end
+                    pcall(function()
+                        VIM:SendKeyEvent(true,  k, false, game)
+                    end)
+                    task.wait(0.05)
+                    pcall(function()
+                        VIM:SendKeyEvent(false, k, false, game)
+                    end)
+                    task.wait(0.1)
+                end
+            else
+                task.wait(0.1)
             end
         end
     end)
+end
+
+StopSkillLoop = function()
+    skillLoopRunning = false
+end
+
+-- SpamSkill giờ chỉ đảm bảo loop đang chạy (không tạo thread mới mỗi frame)
+local function SpamSkill()
+    StartSkillLoop()
 end
 
 -- ══════════════════════════════════════════════
@@ -357,6 +377,7 @@ end
 -- ══════════════════════════════════════════════
 StopFly = function()
     ST.Flying = false
+    StopSkillLoop()  -- dừng skill loop khi stop fly
     if ST.CurrentTween then
         ST.CurrentTween:Cancel()
         ST.CurrentTween = nil
@@ -428,12 +449,12 @@ local function FlyToTarget()
                         ST.HuntStart = tick()
                         print("⏱ Timer started — arrived at "..ST.Target.Name)
                     end
+                    StartSkillLoop()  -- bắt đầu skill loop 1 lần duy nhất
                 end
-                -- Attack trong task.spawn riêng — KHÔNG yield loop này
+                -- Attack trong task.spawn riêng
                 task.spawn(function()
                     FireAttack(GetAttackTargets())
                 end)
-                SpamSkill()
 
             elseif dist <= CFG.AttackDist + 8 then
                 -- VÙNG ĐỆM: tiến chậm vào và đánh
@@ -441,14 +462,16 @@ local function FlyToTarget()
                 bv.Velocity = dir * 60
                 bp.MaxForce = Vector3.new(0, 1e9, 0)  -- vẫn giữ Y
                 bp.Position = Vector3.new(currentPos.X, targetPos.Y, currentPos.Z)
-                ST.Arrived = true
-                if not ST.HuntStart then
-                    ST.HuntStart = tick()
+                if not ST.Arrived then
+                    ST.Arrived = true
+                    if not ST.HuntStart then
+                        ST.HuntStart = tick()
+                    end
+                    StartSkillLoop()
                 end
                 task.spawn(function()
                     FireAttack(GetAttackTargets())
                 end)
-                SpamSkill()
 
             else
                 -- CÒN XA: bay nhanh, tắt BodyPosition giữ Y
